@@ -1,0 +1,286 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Settings, Volume2, Save, RotateCcw, ChevronRight, Heart, MessageCircle, X, Send, Loader2, Key } from 'lucide-react';
+
+const App = () => {
+  // 遊戲與 AI 狀態
+  const [gameState, setGameState] = useState('title');
+  const [currentScene, setCurrentScene] = useState(0);
+  const [lovePoints, setLovePoints] = useState(0);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  
+  // AI 聊天相關狀態
+  const [apiKey, setApiKey] = useState('');
+  const [chatStyle, setChatStyle] = useState('gentle');
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: '（歪著頭）嘎嘎？你有什麼想問我的嗎？' }
+  ]);
+  const [inputValue, setInputValue] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const chatEndRef = useRef(null);
+
+  // 自動捲動聊天室
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping]);
+
+  // 角色定義與劇本 (同前版本)
+  const CHARACTERS = {
+    GUGU: { name: '咕咕嘎嘎', color: 'text-blue-400' },
+    ADMIN: { name: '管理員', color: 'text-yellow-500' },
+    PLAYER: { name: '你', color: 'text-gray-300' }
+  };
+
+  const SCRIPT = [
+    { id: 0, speaker: 'PLAYER', text: '這裡是一望無際的冰原... 我是怎麼來到這裡的？', background: 'bg-blue-50', leftChar: null, rightChar: null },
+    { id: 1, speaker: 'GUGU', text: '嘎嘎！你終於醒了，異世界的人類。', background: 'bg-blue-100', leftChar: 'active', rightChar: null },
+    { id: 2, speaker: 'ADMIN', text: '咕咕，別嚇到他。這裡是極地管理處，我是這裡的負責人。', background: 'bg-blue-100', leftChar: 'active', rightChar: 'active' },
+    { id: 3, speaker: 'ADMIN', text: '雖然我穿著企鵝裝，但我真的是管理員。你看這條特製的銀色鏈條，這是我權力的象徵。', background: 'bg-blue-100', leftChar: 'idle', rightChar: 'active' },
+    { id: 4, speaker: 'GUGU', text: '喂，管理員！別顧著吹噓你的鏈條啦。異鄉人，你想加入我們的企鵝軍團嗎？', background: 'bg-blue-100', leftChar: 'active', rightChar: 'idle', options: [{ text: '我想跟咕咕嘎嘎一起跳舞！', nextId: 5, loveGain: 10 }, { text: '我想了解管理員的鏈條秘密。', nextId: 8, loveGain: 5 }] },
+    { id: 5, speaker: 'GUGU', text: '太好了！嘎嘎！我們現在就出發去冰湖跳舞！', background: 'bg-cyan-50', leftChar: 'active', rightChar: null },
+    { id: 6, speaker: 'PLAYER', text: '我和咕咕嘎嘎在冰上轉圈，雖然腳很冷，但心裡暖暖的。', background: 'bg-cyan-100', leftChar: 'active', rightChar: null },
+    { id: 7, speaker: 'SYSTEM', text: '【達成結局：冰上的華爾茲】', background: 'bg-white', isEnd: true },
+    { id: 8, speaker: 'ADMIN', text: '哦？眼光不錯嘛。這條鏈條可是用南極最堅硬的玄鐵打造的。', background: 'bg-slate-100', leftChar: null, rightChar: 'active' },
+    { id: 9, speaker: 'ADMIN', text: '既然如此，你就留下來幫我管理這片冰原吧。', background: 'bg-slate-200', leftChar: null, rightChar: 'active' },
+    { id: 10, speaker: 'SYSTEM', text: '【達成結局：極地實習生】', background: 'bg-white', isEnd: true }
+  ];
+
+  const currentData = SCRIPT[currentScene];
+
+  // --- API 邏輯 ---
+
+  const translateError = (error, status) => {
+    if (status === 429) return "嘎嘎！問太快了，我的腦袋轉不過來，請等幾秒再試試！";
+    if (status === 401 || status === 403) return "金鑰好像貼錯了，或者是無效的 API Key 喔。";
+    if (error.message?.includes('quota')) return "今日配額用完啦！我們明天再聊吧。";
+    return `發生了神秘的錯誤：${error.message || "可能是極地網路斷線了"}`;
+  };
+
+  const callGeminiAPI = async (userPrompt) => {
+    const systemPrompts = {
+      gentle: "你是咕咕嘎嘎，一位溫柔活潑的企鵝少女，說話結尾喜歡加「嘎嘎」。",
+      tsundere: "你是咕咕嘎嘎，傲嬌的企鵝少女。雖然嘴上說討厭人類，但其實很關心玩家。結尾加「嘎」。",
+      admin: "你是極地管理員，穿著企鵝裝，嚴肅但幽默，說話沉穩且專業。"
+    };
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    let retries = 0;
+    const maxRetries = 5;
+
+    while (retries <= maxRetries) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: userPrompt }] }],
+            systemInstruction: { parts: [{ text: systemPrompts[chatStyle] }] }
+          })
+        });
+
+        const result = await response.json();
+        
+        if (!response.ok) {
+          throw { status: response.status, message: result.error?.message };
+        }
+
+        return result.candidates?.[0]?.content?.parts?.[0]?.text;
+      } catch (error) {
+        if (error.status === 429 && retries < maxRetries) {
+          const delay = Math.pow(2, retries) * 1000;
+          await new Promise(res => setTimeout(res, delay));
+          retries++;
+          continue;
+        }
+        throw error;
+      }
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() || isTyping) return;
+    if (!apiKey) {
+      setMessages(prev => [...prev, { role: 'assistant', content: '（提醒）請先在上方輸入 API Key 才能跟我說話喔！' }]);
+      return;
+    }
+
+    const userText = inputValue;
+    setMessages(prev => [...prev, { role: 'user', content: userText }]);
+    setInputValue('');
+    setIsTyping(true);
+
+    try {
+      const aiResponse = await callGeminiAPI(userText);
+      setMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: translateError(err, err.status) }]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  // --- UI 元件 ---
+
+  const CharacterSprite = ({ type, state, position }) => {
+    const isActive = state === 'active';
+    const isLeft = position === 'left';
+    return (
+      <div className={`absolute bottom-0 transition-all duration-500 transform 
+        ${isLeft ? 'left-10' : 'right-10'} 
+        ${isActive ? 'scale-110 translate-y-0 opacity-100' : 'scale-100 translate-y-4 opacity-50'}`}>
+        <div className="relative w-64 h-96 flex flex-col items-center">
+          <div className={`w-full h-full rounded-t-full border-4 flex items-end justify-center overflow-hidden
+            ${isLeft ? 'bg-blue-200 border-blue-400' : 'bg-gray-700 border-yellow-500'}`}>
+            <div className="text-6xl mb-20">{isLeft ? '🐧👧' : '🐧🛡️'}</div>
+          </div>
+          <div className="absolute -top-10 bg-white/80 px-4 py-1 rounded-full text-sm font-bold shadow-sm text-gray-800">
+            {isLeft ? CHARACTERS.GUGU.name : CHARACTERS.ADMIN.name}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="w-full h-screen bg-slate-900 flex items-center justify-center font-sans overflow-hidden select-none p-4">
+      <div className="relative w-full max-w-5xl h-[700px] bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+        
+        {/* 標題畫面 */}
+        {gameState === 'title' && (
+          <div className="absolute inset-0 z-50 bg-gradient-to-b from-blue-400 to-indigo-600 flex flex-col items-center justify-center text-white">
+            <h1 className="text-6xl font-black mb-4 tracking-tighter drop-shadow-lg">企鵝冒險：AI 互動版</h1>
+            <button onClick={() => setGameState('playing')} className="px-12 py-4 bg-white text-indigo-600 rounded-full text-2xl font-bold hover:bg-yellow-400 hover:text-white transition-all transform hover:scale-110 shadow-xl">
+              開始冒險
+            </button>
+          </div>
+        )}
+
+        {/* 遊戲主區 */}
+        <div className={`relative flex-1 ${currentData.background} transition-colors duration-1000 flex overflow-hidden`}>
+          
+          {/* 側邊聊天室抽屜 */}
+          <div className={`absolute right-0 top-0 bottom-0 z-40 transition-all duration-300 transform shadow-2xl bg-white flex flex-col ${isChatOpen ? 'w-[400px]' : 'w-0 overflow-hidden'}`}>
+            {/* 聊天室頭部與設定 */}
+            <div className="p-4 bg-indigo-600 text-white space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="font-bold flex items-center gap-2"><MessageCircle size={18}/> 企鵝 AI 空間</span>
+                <button onClick={() => setIsChatOpen(false)}><X size={20}/></button>
+              </div>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 bg-white/20 p-2 rounded text-sm">
+                  <Key size={14} />
+                  <input 
+                    type="password" 
+                    placeholder="輸入 Gemini API Key..." 
+                    className="bg-transparent border-none outline-none text-white placeholder:text-white/50 w-full"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
+                </div>
+                <select 
+                  className="bg-white/20 p-1.5 rounded text-xs outline-none cursor-pointer"
+                  value={chatStyle}
+                  onChange={(e) => setChatStyle(e.target.value)}
+                >
+                  <option value="gentle" className="text-gray-800">風格：溫柔少女</option>
+                  <option value="tsundere" className="text-gray-800">風格：傲嬌少女</option>
+                  <option value="admin" className="text-gray-800">風格：極地管理員</option>
+                </select>
+              </div>
+            </div>
+
+            {/* 聊天訊息區 */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] p-3 rounded-2xl text-sm shadow-sm ${msg.role === 'user' ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none'}`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {isTyping && (
+                <div className="flex justify-start animate-pulse">
+                  <div className="bg-white text-gray-400 p-3 rounded-2xl border text-xs flex items-center gap-2">
+                    <Loader2 size={14} className="animate-spin"/> 咕咕正在思考中...
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* 聊天輸入 */}
+            <div className="p-4 border-t bg-white flex gap-2">
+              <input 
+                type="text" 
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                placeholder="跟企鵝說點什麼..."
+                className="flex-1 border rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+              <button 
+                onClick={handleSendMessage}
+                disabled={isTyping}
+                className="bg-indigo-500 text-white p-2 rounded-full hover:bg-indigo-600 active:scale-95 disabled:opacity-50"
+              >
+                <Send size={18}/>
+              </button>
+            </div>
+          </div>
+
+          {/* 遊戲內容 */}
+          <div className="relative flex-1 h-full overflow-hidden" onClick={() => !currentData.options && setCurrentScene(prev => (currentData.isEnd ? 0 : prev + 1))}>
+            {currentData.leftChar && <CharacterSprite position="left" state={currentData.leftChar} />}
+            {currentData.rightChar && <CharacterSprite position="right" state={currentData.rightChar} />}
+            
+            <div className="absolute top-4 left-4 flex gap-2">
+              <button 
+                onClick={(e) => { e.stopPropagation(); setIsChatOpen(true); }}
+                className="bg-white/80 backdrop-blur p-3 rounded-full shadow-lg text-indigo-600 hover:scale-110 transition-transform"
+              >
+                <MessageCircle size={24} />
+              </button>
+            </div>
+
+            <div className="absolute top-4 right-4 bg-white/50 backdrop-blur px-4 py-2 rounded-lg flex items-center gap-2">
+              <Heart className="text-red-500 fill-red-500" size={18} />
+              <span className="font-bold text-gray-700">好感度: {lovePoints}</span>
+            </div>
+
+            {/* 對話框 */}
+            <div className="absolute bottom-6 left-6 right-6 h-44 bg-black/70 backdrop-blur-md border-2 border-white/30 rounded-2xl p-6 text-white group cursor-pointer transition-all hover:bg-black/80">
+              {currentData.speaker !== 'SYSTEM' && (
+                <div className={`text-xl font-bold mb-2 ${CHARACTERS[currentData.speaker]?.color}`}>
+                  {CHARACTERS[currentData.speaker]?.name}
+                </div>
+              )}
+              <p className="text-lg leading-relaxed">{currentData.text}</p>
+              
+              {!currentData.options && (
+                <div className="absolute bottom-4 right-6 animate-bounce opacity-50"><ChevronRight size={24} /></div>
+              )}
+
+              {currentData.options && (
+                <div className="absolute -top-48 left-0 right-0 flex flex-col items-center gap-3">
+                  {currentData.options.map((opt, idx) => (
+                    <button key={idx} onClick={(e) => { e.stopPropagation(); setLovePoints(p => p + opt.loveGain); setCurrentScene(opt.nextId); }} className="w-2/3 py-3 bg-white text-gray-800 rounded-xl font-bold hover:bg-yellow-400 hover:text-white transition-all shadow-lg active:scale-95">
+                      {opt.text}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 底部欄 */}
+        <div className="h-10 bg-gray-900 flex items-center justify-between px-6 text-[10px] text-gray-500 uppercase tracking-widest">
+          <div className="flex gap-4"><span>Auto</span><span>Skip</span><span>History</span></div>
+          <div className="flex gap-4"><span>Save</span><span>Load</span><span>Config</span></div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
